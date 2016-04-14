@@ -1,29 +1,33 @@
 package engi
 
+import (
+	"sync"
+)
+
 var (
 	KEY_STATE_UP        string = "up"
 	KEY_STATE_DOWN      string = "down"
 	KEY_STATE_JUST_DOWN string = "justdown"
 	KEY_STATE_JUST_UP   string = "justup"
 
-	states map[Key]bool
+	keyStates map[Key]bool
 
 	Keys KeyManager
 )
 
 type KeyManager struct {
-	KEY_W       KeyState
-	KEY_A       KeyState
-	KEY_S       KeyState
-	KEY_D       KeyState
-	KEY_UP      KeyState
-	KEY_DOWN    KeyState
-	KEY_LEFT    KeyState
-	KEY_RIGHT   KeyState
-	KEY_SPACE   KeyState
-	KEY_CONTROL KeyState
-	KEY_ESCAPE  KeyState
-	SHIFT       KeyState
+	mapper map[Key]KeyState
+	mutex  sync.RWMutex
+}
+
+func (km *KeyManager) Get(k Key) KeyState {
+	km.mutex.RLock()
+	defer km.mutex.RUnlock()
+	ks, ok := km.mapper[k]
+	if !ok {
+		return KeyState{false, false}
+	}
+	return ks
 }
 
 type KeyState struct {
@@ -67,18 +71,16 @@ func (key KeyState) Down() bool {
 }
 
 func keysUpdate() {
-	Keys.KEY_W.set(states[W])
-	Keys.KEY_A.set(states[A])
-	Keys.KEY_S.set(states[S])
-	Keys.KEY_D.set(states[D])
+	Keys.mutex.Lock()
+	for key, down := range keyStates {
+		ks := Keys.mapper[key]
+		ks.set(down)
+		Keys.mapper[key] = ks
+	}
 
-	Keys.KEY_UP.set(states[ArrowUp])
-	Keys.KEY_DOWN.set(states[ArrowDown])
-	Keys.KEY_LEFT.set(states[ArrowLeft])
-	Keys.KEY_RIGHT.set(states[ArrowRight])
+	Keys.mutex.Unlock()
+}
 
-	Keys.KEY_SPACE.set(states[Space])
-	Keys.KEY_ESCAPE.set(states[Escape])
-	Keys.KEY_CONTROL.set(states[LeftControl])
-	Keys.SHIFT.set(states[LeftShift])
+func init() {
+	Keys.mapper = make(map[Key]KeyState)
 }

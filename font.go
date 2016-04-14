@@ -1,78 +1,88 @@
 package engi
 
 import (
-	"code.google.com/p/freetype-go/freetype"
-	"code.google.com/p/freetype-go/freetype/truetype"
 	"image"
 	"image/color"
 	"image/draw"
 	"io/ioutil"
 	"log"
+
+	"fmt"
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
+	"golang.org/x/image/math/fixed"
 )
 
 var (
 	dpi = float64(72)
 )
 
-type Color struct {
-	R, G, B, A uint8
-}
-
 // TODO FG and BG color config
 type Font struct {
 	URL  string
 	Size float64
-	BG   Color
-	FG   Color
+	BG   color.Color
+	FG   color.Color
 	ttf  *truetype.Font
 }
 
-func (f *Font) Create() {
-	url := f.URL
-
+// Create is for loading fonts from the disk, given a location
+func (f *Font) Create() error {
 	// Read and parse the font
-	ttfBytes, err := ioutil.ReadFile(url)
+	ttfBytes, err := ioutil.ReadFile(f.URL)
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
 
 	ttf, err := freetype.ParseFont(ttfBytes)
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
 	f.ttf = ttf
+
+	return nil
+}
+
+// CreatePreloaded is for loading fonts which have already been defined (and loaded) within Preload
+func (f *Font) CreatePreloaded() error {
+	var ok bool
+	f.ttf, ok = Files.fonts[f.URL]
+	if !ok {
+		return fmt.Errorf("could not find preloaded font: %s", f.URL)
+	}
+
+	return nil
 }
 
 func (f *Font) TextDimensions(text string) (int, int, int) {
-	font := f.ttf
+	fnt := f.ttf
 	size := f.Size
 	var (
-		totalWidth  = int32(0)
-		totalHeight = int32(size)
-		maxYBearing = int32(0)
+		totalWidth  = fixed.Int26_6(0)
+		totalHeight = fixed.Int26_6(size)
+		maxYBearing = fixed.Int26_6(0)
 	)
-	fupe := font.FUnitsPerEm()
+	fupe := fixed.Int26_6(fnt.FUnitsPerEm())
 	for _, char := range text {
-		idx := font.Index(char)
-		hm := font.HMetric(fupe, idx)
-		vm := font.VMetric(fupe, idx)
-		g := truetype.NewGlyphBuf()
-		err := g.Load(font, fupe, idx, truetype.NoHinting)
+		idx := fnt.Index(char)
+		hm := fnt.HMetric(fupe, idx)
+		vm := fnt.VMetric(fupe, idx)
+		g := truetype.GlyphBuf{}
+		err := g.Load(fnt, fupe, idx, font.HintingNone)
 		if err != nil {
 			log.Println(err)
 			return 0, 0, 0
 		}
 		totalWidth += hm.AdvanceWidth
-		yB := (vm.TopSideBearing * int32(size)) / fupe
+		yB := (vm.TopSideBearing * fixed.Int26_6(size)) / fupe
 		if yB > maxYBearing {
 			maxYBearing = yB
 		}
 	}
 
 	// Scale to actual pixel size
-	totalWidth *= int32(size)
+	totalWidth *= fixed.Int26_6(size)
 	totalWidth /= fupe
 
 	return int(totalWidth), int(totalHeight), int(maxYBearing)
@@ -83,9 +93,17 @@ func (f *Font) Render(text string) *Texture {
 	font := f.ttf
 	size := f.Size
 
+	// Default colors
+	if f.FG == nil {
+		f.FG = color.NRGBA{0, 0, 0, 0}
+	}
+	if f.BG == nil {
+		f.BG = color.NRGBA{0, 0, 0, 0}
+	}
+
 	// Colors
-	fg := image.NewUniform(color.NRGBA{f.FG.R, f.FG.G, f.FG.B, f.FG.A})
-	bg := image.NewUniform(color.NRGBA{f.BG.R, f.BG.G, f.BG.B, f.BG.A})
+	fg := image.NewUniform(f.FG)
+	bg := image.NewUniform(f.BG)
 
 	// Create the font context
 	c := freetype.NewContext()

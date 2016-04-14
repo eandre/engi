@@ -12,8 +12,8 @@ import (
 	"math/rand"
 	"strconv"
 
-	"github.com/ajhager/webgl"
 	"github.com/gopherjs/gopherjs/js"
+	"github.com/paked/webgl"
 )
 
 func init() {
@@ -40,7 +40,7 @@ func run(title string, width, height int, fullscreen bool) {
 	attrs.Antialias = false
 
 	var err error
-	gl, err = webgl.NewContext(canvas, attrs)
+	Gl, err = webgl.NewContext(canvas, attrs)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -129,16 +129,16 @@ func run(title string, width, height int, fullscreen bool) {
 
 	js.Global.Call("addEventListener", "keydown", func(ev js.Object) {
 		key := Key(ev.Get("keyCode").Int())
-		states[key] = true
+		keyStates[key] = true
 	}, false)
 
 	js.Global.Call("addEventListener", "keyup", func(ev js.Object) {
 		key := Key(ev.Get("keyCode").Int())
-		states[key] = false
+		keyStates[key] = false
 		// responder.Key(Key(ev.Get("keyCode").Int()), 0, RELEASE)
 	}, false)
-	Gl = gl
-	gl.Viewport(0, 0, width, height)
+
+	Gl.Viewport(0, 0, width, height)
 	Wo.New()
 	responder.Preload()
 	Files.Load(func() {

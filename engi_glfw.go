@@ -17,8 +17,10 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/ajhager/webgl"
 	"github.com/go-gl/glfw/v3.1/glfw"
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
+	"github.com/paked/webgl"
 )
 
 var (
@@ -30,6 +32,11 @@ var (
 	Hand      *glfw.Cursor
 	HResize   *glfw.Cursor
 	VResize   *glfw.Cursor
+
+	headlessWidth             = 800
+	headlessHeight            = 800
+	gameWidth, gameHeight     float32
+	windowWidth, windowHeight float32
 )
 
 // fatalErr calls log.Fatal with the given error if it is non-nil.
@@ -39,7 +46,7 @@ func fatalErr(err error) {
 	}
 }
 
-func run(title string, width, height int, fullscreen bool) {
+func run(defaultScene Scene, title string, width, height int, fullscreen bool) {
 
 	err := glfw.Init()
 	fatalErr(err)
@@ -48,9 +55,14 @@ func run(title string, width, height int, fullscreen bool) {
 
 	Arrow = glfw.CreateStandardCursor(int(glfw.ArrowCursor))
 	Hand = glfw.CreateStandardCursor(int(glfw.HandCursor))
+	IBeam = glfw.CreateStandardCursor(int(glfw.IBeamCursor))
+	Crosshair = glfw.CreateStandardCursor(int(glfw.CrosshairCursor))
 
 	monitor := glfw.GetPrimaryMonitor()
 	mode := monitor.GetVideoMode()
+
+	gameWidth = float32(width)
+	gameHeight = float32(height)
 
 	if fullscreen {
 		width = mode.Width
@@ -73,67 +85,142 @@ func run(title string, width, height int, fullscreen bool) {
 	}
 
 	width, height = window.GetFramebufferSize()
+	windowWidth, windowHeight = float32(width), float32(height)
 
 	glfw.SwapInterval(1)
 
-	gl = webgl.NewContext()
-	gl.Viewport(0, 0, width, height)
+	Gl = webgl.NewContext()
+	Gl.Viewport(0, 0, width, height)
+
 	window.SetFramebufferSizeCallback(func(window *glfw.Window, w, h int) {
 		width, height = window.GetFramebufferSize()
-		gl.Viewport(0, 0, width, height)
-		responder.Resize(w, h)
+		Gl.Viewport(0, 0, width, height)
+
+		// TODO: when do we want to handle resizing? and who should deal with it?
+		// responder.Resize(w, h)
 	})
 
 	window.SetCursorPosCallback(func(window *glfw.Window, x, y float64) {
-		responder.Mouse(float32(x), float32(y), MOVE)
+		Mouse.X, Mouse.Y = float32(x), float32(y)
+		Mouse.Action = MOVE
 	})
 
 	window.SetMouseButtonCallback(func(window *glfw.Window, b glfw.MouseButton, a glfw.Action, m glfw.ModifierKey) {
 		x, y := window.GetCursorPos()
+		Mouse.X, Mouse.Y = float32(x), float32(y)
 
 		if a == glfw.Press {
-			responder.Mouse(float32(x), float32(y), PRESS)
+			Mouse.Action = PRESS
 		} else {
-			responder.Mouse(float32(x), float32(y), RELEASE)
+			Mouse.Action = RELEASE
 		}
 	})
 
 	window.SetScrollCallback(func(window *glfw.Window, xoff, yoff float64) {
-		responder.Scroll(float32(yoff))
+		Mouse.ScrollX = float32(xoff)
+		Mouse.ScrollY = float32(yoff)
 	})
 
 	window.SetKeyCallback(func(window *glfw.Window, k glfw.Key, s int, a glfw.Action, m glfw.ModifierKey) {
 		key := Key(k)
 		if a == glfw.Press {
-			states[key] = true
+			keyStates[key] = true
 		} else if a == glfw.Release {
-			states[key] = false
+			keyStates[key] = false
+		}
+	})
+
+	window.SetSizeCallback(func(w *glfw.Window, widthInt int, heightInt int) {
+		windowWidth = float32(widthInt)
+		windowHeight = float32(heightInt)
+
+		if !scaleOnResize {
+			gameWidth, gameHeight = float32(widthInt), float32(heightInt)
+
+			// Update default batch
+			for _, scene := range scenes {
+				if scene.world == nil {
+					continue // with other scenes
+				}
+
+				for _, s := range scene.world.Systems() {
+					if render, ok := s.(*RenderSystem); ok {
+						render.defaultBatch.SetProjection(gameWidth, gameHeight)
+					}
+				}
+			}
+		}
+
+		// Update HUD batch
+		for _, scene := range scenes {
+			if scene.world == nil {
+				continue // with other scenes
+			}
+
+			for _, s := range scene.world.Systems() {
+				if render, ok := s.(*RenderSystem); ok {
+					render.hudBatch.SetProjection(windowWidth, windowHeight)
+				}
+			}
 		}
 	})
 
 	window.SetCharCallback(func(window *glfw.Window, char rune) {
-		responder.Type(char)
+		// TODO: what does this do, when can we use it?
+		// it's like KeyCallback, but for specific characters instead of keys...?
+		// responder.Type(char)
 	})
 
-	Gl = gl
+	runLoop(defaultScene, false)
+}
 
-	responder.Preload()
-	Files.Load(func() {})
-	responder.Setup()
+func SetTitle(title string) {
+	window.SetTitle(title)
+}
 
-	Wo.New()
+func runHeadless(defaultScene Scene) {
+	runLoop(defaultScene, true)
+}
+
+// RunIteration runs one iteration / frame
+func RunIteration() {
+	// First check for new keypresses
+	if !headless {
+		glfw.PollEvents()
+		keysUpdate()
+	}
+
+	// Then update the world and all Systems
+	currentWorld.Update(Time.Delta())
+
+	// Lastly, forget keypresses and swap buffers
+	if !headless {
+		Mouse.ScrollX, Mouse.ScrollY = 0, 0
+		window.SwapBuffers()
+	}
+
+	Time.Tick()
+}
+
+// RunPreparation is called only once, and is called automatically when calling Open
+// It is only here for benchmarking in combination with OpenHeadlessNoRun
+func RunPreparation(defaultScene Scene) {
+	// Default WorldBounds values
+	WorldBounds.Max = Point{Width(), Height()}
+
+	SetScene(defaultScene, false)
+}
+
+func runLoop(defaultScene Scene, headless bool) {
+	RunPreparation(defaultScene)
+
 	ticker := time.NewTicker(time.Duration(int(time.Second) / fpsLimit))
-
 Outer:
 	for {
 		select {
 		case <-ticker.C:
-			responder.Update(Time.Delta())
-			window.SwapBuffers()
-			glfw.PollEvents()
-			keysUpdate()
-			Time.Tick()
-			if window.ShouldClose() {
+			RunIteration()
+			if !headless && window.ShouldClose() {
 				break Outer
 			}
 		case <-resetLoopTicker:
@@ -142,22 +229,30 @@ Outer:
 		}
 	}
 	ticker.Stop()
-
-	responder.Close()
 }
 
-func width() float32 {
-	width, _ := window.GetSize()
-	return float32(width)
+func Width() float32 {
+	return gameWidth
 }
 
-func height() float32 {
-	_, height := window.GetSize()
-	return float32(height)
+func Height() float32 {
+	return gameHeight
 }
 
-func exit() {
+func WindowWidth() float32 {
+	return windowWidth
+}
+
+func WindowHeight() float32 {
+	return windowHeight
+}
+
+func Exit() {
 	window.SetShouldClose(true)
+}
+
+func SetCursor(c *glfw.Cursor) {
+	window.SetCursor(c)
 }
 
 func init() {
@@ -267,6 +362,26 @@ func init() {
 	NumEnter = Key(glfw.KeyKPEnter)
 }
 
+func NewImageRGBA(img *image.RGBA) *ImageRGBA {
+	return &ImageRGBA{img}
+}
+
+type ImageRGBA struct {
+	data *image.RGBA
+}
+
+func (i *ImageRGBA) Data() interface{} {
+	return i.data
+}
+
+func (i *ImageRGBA) Width() int {
+	return i.data.Rect.Max.X
+}
+
+func (i *ImageRGBA) Height() int {
+	return i.data.Rect.Max.Y
+}
+
 func NewImageObject(img *image.NRGBA) *ImageObject {
 	return &ImageObject{img}
 }
@@ -305,12 +420,21 @@ func loadImage(r Resource) (Image, error) {
 	return &ImageObject{newm}, nil
 }
 
-func loadJson(r Resource) (string, error) {
+func loadJSON(r Resource) (string, error) {
 	file, err := ioutil.ReadFile(r.url)
 	if err != nil {
 		return "", err
 	}
 	return string(file), nil
+}
+
+func loadFont(r Resource) (*truetype.Font, error) {
+	ttfBytes, err := ioutil.ReadFile(r.url)
+	if err != nil {
+		return nil, err
+	}
+
+	return freetype.ParseFont(ttfBytes)
 }
 
 type Assets struct {

@@ -5,11 +5,15 @@
 package engi
 
 import (
-	"github.com/ajhager/webgl"
+	"image/color"
 	"io/ioutil"
 	"log"
 	"math"
+	"os"
 	"path"
+
+	"github.com/golang/freetype/truetype"
+	"github.com/paked/webgl"
 )
 
 type Resource struct {
@@ -23,6 +27,8 @@ type Loader struct {
 	images    map[string]*Texture
 	jsons     map[string]string
 	levels    map[string]*Level
+	sounds    map[string]string
+	fonts     map[string]*truetype.Font
 }
 
 func NewLoader() *Loader {
@@ -31,6 +37,8 @@ func NewLoader() *Loader {
 		images:    make(map[string]*Texture),
 		jsons:     make(map[string]string),
 		levels:    make(map[string]*Level),
+		sounds:    make(map[string]string),
+		fonts:     make(map[string]*truetype.Font),
 	}
 }
 
@@ -76,6 +84,14 @@ func (l *Loader) Level(name string) *Level {
 	return l.levels[name]
 }
 
+func (l *Loader) Sound(name string) ReadSeekCloser {
+	f, err := os.Open(l.sounds[name])
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
 func (l *Loader) Load(onFinish func()) {
 	for _, r := range l.resources {
 		switch r.kind {
@@ -84,8 +100,13 @@ func (l *Loader) Load(onFinish func()) {
 			if err == nil {
 				l.images[r.name] = NewTexture(data)
 			}
+		case "jpg":
+			data, err := loadImage(r)
+			if err == nil {
+				l.images[r.name] = NewTexture(data)
+			}
 		case "json":
-			data, err := loadJson(r)
+			data, err := loadJSON(r)
 			if err == nil {
 				l.jsons[r.name] = data
 			}
@@ -93,6 +114,13 @@ func (l *Loader) Load(onFinish func()) {
 			data, err := createLevelFromTmx(r)
 			if err == nil {
 				l.levels[r.name] = data
+			}
+		case "wav":
+			l.sounds[r.name] = r.url
+		case "ttf":
+			f, err := loadFont(r)
+			if err == nil {
+				l.fonts[r.name] = f
 			}
 		}
 	}
@@ -106,20 +134,20 @@ type Image interface {
 }
 
 func LoadShader(vertSrc, fragSrc string) *webgl.Program {
-	vertShader := gl.CreateShader(gl.VERTEX_SHADER)
-	gl.ShaderSource(vertShader, vertSrc)
-	gl.CompileShader(vertShader)
-	defer gl.DeleteShader(vertShader)
+	vertShader := Gl.CreateShader(Gl.VERTEX_SHADER)
+	Gl.ShaderSource(vertShader, vertSrc)
+	Gl.CompileShader(vertShader)
+	defer Gl.DeleteShader(vertShader)
 
-	fragShader := gl.CreateShader(gl.FRAGMENT_SHADER)
-	gl.ShaderSource(fragShader, fragSrc)
-	gl.CompileShader(fragShader)
-	defer gl.DeleteShader(fragShader)
+	fragShader := Gl.CreateShader(Gl.FRAGMENT_SHADER)
+	Gl.ShaderSource(fragShader, fragSrc)
+	Gl.CompileShader(fragShader)
+	defer Gl.DeleteShader(fragShader)
 
-	program := gl.CreateProgram()
-	gl.AttachShader(program, vertShader)
-	gl.AttachShader(program, fragShader)
-	gl.LinkProgram(program)
+	program := Gl.CreateProgram()
+	Gl.AttachShader(program, vertShader)
+	Gl.AttachShader(program, fragShader)
+	Gl.LinkProgram(program)
 
 	return program
 }
@@ -132,7 +160,7 @@ type Region struct {
 }
 
 func (r *Region) Render(b *Batch, render *RenderComponent, space *SpaceComponent) {
-	r.texture.Render(b, render, space)
+	b.Draw(r, space.Position.X, space.Position.Y, 0, 0, render.Scale.X, render.Scale.Y, 0, render.Color, render.Transparency)
 }
 
 func NewRegion(texture *Texture, x, y, w, h int) *Region {
@@ -172,27 +200,30 @@ type Texture struct {
 }
 
 func NewTexture(img Image) *Texture {
-	id := gl.CreateTexture()
+	var id *webgl.Texture
+	if !headless {
+		id = Gl.CreateTexture()
 
-	gl.BindTexture(gl.TEXTURE_2D, id)
+		Gl.BindTexture(Gl.TEXTURE_2D, id)
 
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+		Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE)
+		Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE)
+		Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR)
+		Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST)
 
-	if img.Data() == nil {
-		panic("Texture image data is nil.")
+		if img.Data() == nil {
+			panic("Texture image data is nil.")
+		}
+
+		Gl.TexImage2D(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.RGBA, Gl.UNSIGNED_BYTE, img.Data())
 	}
-
-	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img.Data())
 
 	return &Texture{id, img.Width(), img.Height()}
 }
 
 func (t *Texture) Render(b *Batch, render *RenderComponent, space *SpaceComponent) {
-	Wo.Batch().Draw(t,
-		space.Position.X-Cam.pos.X, space.Position.Y-Cam.pos.Y,
+	b.Draw(t,
+		space.Position.X, space.Position.Y,
 		0, 0,
 		render.Scale.X, render.Scale.Y,
 		0,
@@ -223,7 +254,7 @@ type Sprite struct {
 	Scale    *Point
 	Anchor   *Point
 	Rotation float32
-	Color    uint32
+	Color    color.Color
 	Alpha    float32
 	Region   *Region
 }
@@ -234,14 +265,10 @@ func NewSprite(region *Region, x, y float32) *Sprite {
 		Scale:    &Point{1, 1},
 		Anchor:   &Point{0, 0},
 		Rotation: 0,
-		Color:    0xffffff,
+		Color:    color.White,
 		Alpha:    1,
 		Region:   region,
 	}
-}
-
-func (s *Sprite) Render(batch *Batch) {
-	batch.Draw(s.Region, s.Position.X, s.Position.Y, s.Anchor.X, s.Anchor.Y, s.Scale.X, s.Scale.Y, s.Rotation, s.Color, s.Alpha)
 }
 
 var batchVert = ` 
@@ -250,21 +277,55 @@ attribute vec4 in_Color;
 attribute vec2 in_TexCoords;
 
 uniform vec2 uf_Projection;
+uniform vec3 center;
 
 varying vec4 var_Color;
 varying vec2 var_TexCoords;
 
-const vec2 center = vec2(-1.0, 1.0);
+void main() {
+  var_Color = in_Color;
+  var_TexCoords = in_TexCoords;
+  gl_Position = vec4(in_Position.x /  uf_Projection.x - center.x,
+				 	 in_Position.y / -uf_Projection.y + center.y,
+										 0, center.z);
+}`
+
+var batchFrag = `
+#ifdef GL_ES
+#define LOWP lowp
+precision mediump float;
+#else
+#define LOWP
+#endif
+
+varying vec4 var_Color;
+varying vec2 var_TexCoords;
+
+uniform sampler2D uf_Texture;
+
+void main (void) {
+  gl_FragColor = var_Color * texture2D(uf_Texture, var_TexCoords);
+}`
+
+var hudVert = `
+attribute vec2 in_Position;
+attribute vec4 in_Color;
+attribute vec2 in_TexCoords;
+
+uniform vec2 uf_Projection;
+uniform vec3 center;
+
+varying vec4 var_Color;
+varying vec2 var_TexCoords;
 
 void main() {
   var_Color = in_Color;
   var_TexCoords = in_TexCoords;
-	gl_Position = vec4(in_Position.x / uf_Projection.x + center.x,
-										 in_Position.y / -uf_Projection.y + center.y,
-										 0.0, 1.0);
+  gl_Position = vec4(in_Position.x / uf_Projection.x - 1.0,
+  					 in_Position.y / -uf_Projection.y + 1.0, 0, 1.0);
 }`
 
-var batchFrag = `
+var hudFrag = `
 #ifdef GL_ES
 #define LOWP lowp
 precision mediump float;

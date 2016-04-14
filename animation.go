@@ -5,115 +5,103 @@
 package engi
 
 import (
+	"github.com/paked/engi/ecs"
 	"log"
 )
 
-// Spritesheet is a class that stores a set of tiles from a file, used by tilemaps and animations
-type Spritesheet struct {
-	texture               *Texture        // The original texture
-	CellWidth, CellHeight int             // The dimensions of the cells
-	cache                 map[int]*Region // The cell cache cells
-}
-
-// Simple handler for creating a new spritesheet from a file
-// textureName is the name of a texture already preloaded with engi.Files.Add
-func NewSpritesheet(textureName string, cellWidth, cellHeight int) *Spritesheet {
-	return &Spritesheet{texture: Files.Image(textureName), CellWidth: cellWidth, CellHeight: cellHeight, cache: make(map[int]*Region)}
-}
-
-// Get the region at the index i, updates and pulls from cache if need be
-func (s *Spritesheet) Cell(i int) *Region {
-	if r := s.cache[i]; r != nil {
-		return r
-	}
-	s.cache[i] = regionFromSheet(s.texture, s.CellWidth, s.CellHeight, i)
-	return s.cache[i]
-}
-
-// The amount of tiles on the x-axis of the spritesheet
-func (s Spritesheet) Width() float32 {
-	return s.texture.Width() / float32(s.CellWidth)
-}
-
-// The amount of tiles on the y-axis of the spritesheet
-func (s Spritesheet) Height() float32 {
-	return s.texture.Height() / float32(s.CellHeight)
+type AnimationAction struct {
+	Name   string
+	Frames []int
 }
 
 // Component that controls animation in rendering entities
 type AnimationComponent struct {
-	Index            int              // What frame in the is being used
-	_index           int              // The index of the tile that should currently be being displayed
+	index            int              // What frame in the is being used
 	Rate             float32          // How often frames should increment, in seconds.
 	change           float32          // The time since the last incrementation
-	S                *Spritesheet     // Pointer to the source spritesheet
+	Renderables      []Renderable     // Renderables
 	Animations       map[string][]int // All possible animations
-	CurrentAnimation []int            // The currently animation
+	CurrentAnimation []int            // The current animation
 }
 
-// Create a new pointer to AnimationComponent
-func NewAnimationComponent() *AnimationComponent {
-	return &AnimationComponent{Animations: make(map[string][]int)}
+func NewAnimationComponent(renderables []Renderable, rate float32) *AnimationComponent {
+	return &AnimationComponent{
+		Animations:  make(map[string][]int),
+		Renderables: renderables,
+		Rate:        rate,
+	}
 }
 
-func (ac *AnimationComponent) SelectAnimation(name string) {
+func (ac *AnimationComponent) SelectAnimationByName(name string) {
 	ac.CurrentAnimation = ac.Animations[name]
 }
 
-func (ac *AnimationComponent) AddAnimation(name string, indexes []int) {
-	ac.Animations[name] = indexes
+func (ac *AnimationComponent) SelectAnimationByAction(action *AnimationAction) {
+	ac.CurrentAnimation = ac.Animations[action.Name]
 }
 
-// Increment the frame
-func (ac *AnimationComponent) Increment() {
-	if len(ac.CurrentAnimation) == 0 {
-		log.Println("No data for this animation")
-		return
+func (ac *AnimationComponent) AddAnimationAction(action *AnimationAction) {
+	ac.Animations[action.Name] = action.Frames
+}
+
+func (ac *AnimationComponent) AddAnimationActions(actions []*AnimationAction) {
+	for _, action := range actions {
+		ac.Animations[action.Name] = action.Frames
 	}
-
-	ac.Index += 1
-	if ac.Index >= len(ac.CurrentAnimation) {
-		ac.Index = 0
-	}
-	ac._index = ac.CurrentAnimation[ac.Index]
-	ac.change = 0
-
 }
 
-//Bug(me) Don't need to use _index at all, use ac.CurrentAnimation[ac.Index] instead. Set ac.Index as a private member variable
-func (ac *AnimationComponent) Cell() *Region {
-	return ac.S.Cell(ac._index)
+func (ac *AnimationComponent) Cell() Renderable {
+	idx := ac.CurrentAnimation[ac.index]
+
+	return ac.Renderables[idx]
 }
 
-func (ac AnimationComponent) Name() string {
+func (*AnimationComponent) Type() string {
 	return "AnimationComponent"
 }
 
 type AnimationSystem struct {
-	*System
+	*ecs.System
 }
 
-func (a *AnimationSystem) New() {
-	a.System = &System{}
+func (a *AnimationSystem) New(*ecs.World) {
+	a.System = ecs.NewSystem()
 }
 
-func (a AnimationSystem) Name() string {
+func (AnimationSystem) Type() string {
 	return "AnimationSystem"
 }
 
-func (a *AnimationSystem) Update(e *Entity, dt float32) {
+func (a *AnimationSystem) Update(e *ecs.Entity, dt float32) {
 	var (
 		ac *AnimationComponent
 		r  *RenderComponent
+		ok bool
 	)
 
-	if !e.GetComponent(&ac) || !e.GetComponent(&r) {
+	if ac, ok = e.ComponentFast(ac).(*AnimationComponent); !ok {
+		return
+	}
+	if r, ok = e.ComponentFast(r).(*RenderComponent); !ok {
 		return
 	}
 
 	ac.change += dt
 	if ac.change >= ac.Rate {
-		ac.Increment()
+		a.NextFrame(ac)
 		r.Display = ac.Cell()
 	}
+}
+
+func (a *AnimationSystem) NextFrame(ac *AnimationComponent) {
+	if len(ac.CurrentAnimation) == 0 {
+		log.Println("No data for this animation")
+		return
+	}
+
+	ac.index += 1
+	if ac.index >= len(ac.CurrentAnimation) {
+		ac.index = 0
+	}
+	ac.change = 0
 }
